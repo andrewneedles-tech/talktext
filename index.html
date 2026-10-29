@@ -8,14 +8,14 @@
   body { margin: 0; font-family: sans-serif; background: #111; color: #eee; font-size: 16px; }
   #status { padding: 10px; text-align: center; background: #333; }
   #status.rec { background: #b00; }
-  textarea { width: 100%; height: 160px; box-sizing: border-box; font-size: 16px; }
+  
   #help { font-size: 13px; padding: 6px; color: #aaa; line-height: 1.5; }
 </style>
 </head>
 <body>
 <div id="status">Press 5 to talk</div>
-<textarea id="out" readonly placeholder="Your words show up here"></textarea>
-<div id="help">5 = talk / stop<br>1 = send as a text<br>0 = clear<br># = change API key<br>* = check saved key</div>
+<div id="out" tabindex="-1" style="min-height:160px;background:#222;padding:6px;white-space:pre-wrap">Your words show up here</div>
+<div id="help">5 = talk / stop<br>1 = send as a text<br>0 = clear<br># = change API key<br>* = check saved key<br><span style="color:#666">v3</span></div>
 
 <script>
 // Speech-to-text service (Groq's free tier runs OpenAI's Whisper model).
@@ -27,6 +27,8 @@ const out = document.getElementById("out");
 let rec = null;      // the MediaRecorder while recording
 let busy = false;    // true while waiting on the AI
 let chunks = [];
+let text = "";
+function show(){ out.textContent = text || "Your words show up here"; }
 
 function say(text, recording) {
   statusEl.textContent = text;
@@ -68,19 +70,28 @@ function getKey() {
 
 async function startRecording() {
   if (!getKey()) return say("Need an API key: press #");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return say("No mic access here. Open in the Browser, not a pinned shortcut");
+  if (typeof MediaRecorder === "undefined") return say("This browser can't record audio");
+  say("Asking for the mic...");
+  let answered = false;
+  const timer = setTimeout(() => {
+    if (!answered) say("Mic never answered. Browser menu > Settings > clear site data, then reopen");
+  }, 8000);
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    answered = true; clearTimeout(timer);
     chunks = [];
     rec = new MediaRecorder(stream);
-    rec.ondataavailable = e => chunks.push(e.data);
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = () => {
       stream.getTracks().forEach(t => t.stop());
       transcribe();
     };
-    rec.start();
+    rec.start(1000);
     say("Listening... press 5 to stop", true);
   } catch (e) {
-    say("Mic blocked: " + e.name);
+    answered = true; clearTimeout(timer);
+    say("Mic blocked: " + e.name + ". Clear site data and allow mic");
   }
 }
 
@@ -88,6 +99,7 @@ async function transcribe() {
   busy = true;
   say("Typing it out...");
   const type = rec.mimeType || "audio/ogg";
+  if (!chunks.length) { rec = null; busy = false; return say("Heard nothing. Press 5 and talk a bit longer"); }
   const blob = new Blob(chunks, { type });
   const ext = type.includes("webm") ? "webm" : "ogg";
   rec = null;
@@ -105,7 +117,7 @@ async function transcribe() {
     const data = await res.json();
     if (res.status === 401) throw new Error("Groq rejected key. " + keyCheck(localStorage.getItem("sttKey")) + ". Press # to retype");
     if (!res.ok) throw new Error(data.error ? data.error.message : res.status);
-    out.value = (out.value ? out.value + " " : "") + data.text.trim();
+    text = (text ? text + " " : "") + data.text.trim(); show();
     say("Done. 1 to send, 5 to add more");
   } catch (e) {
     say("Error: " + e.message);
@@ -115,25 +127,28 @@ async function transcribe() {
 
 // Opens Messages with the words already filled in.
 function sendAsText() {
-  if (!out.value) return say("Nothing to send yet");
-  window.location.href = "sms:?body=" + encodeURIComponent(out.value);
+  if (!text) return say("Nothing to send yet");
+  window.location.href = "sms:?body=" + encodeURIComponent(text);
 }
 
+// Keep focus off any box so the keypad goes to the app, not a text field.
+window.addEventListener("load", () => { if (document.activeElement) document.activeElement.blur(); });
 document.addEventListener("keydown", e => {
   if (busy) return;
-  if (e.key === "5" || e.key === "Enter") {
+  const k = e.key || String.fromCharCode(e.keyCode);
+  if (k === "5" || k === "Enter" || e.keyCode === 53) {
     e.preventDefault();
     if (rec && rec.state === "recording") rec.stop();
     else startRecording();
-  } else if (e.key === "1") {
+  } else if (k === "1") {
     sendAsText();
-  } else if (e.key === "0") {
-    out.value = "";
+  } else if (k === "0") {
+    text = ""; show();
     say("Cleared. Press 5 to talk");
-  } else if (e.key === "#") {
+  } else if (k === "#") {
     localStorage.removeItem("sttKey");
     getKey();
-  } else if (e.key === "*") {
+  } else if (k === "*") {
     const k = localStorage.getItem("sttKey");
     say(k ? keyCheck(k) : "No key saved: press #");
   }
