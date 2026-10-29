@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talk Text</title>
+<style>
+  body { margin: 0; font-family: sans-serif; background: #111; color: #eee; font-size: 16px; }
+  #status { padding: 10px; text-align: center; background: #333; }
+  #status.rec { background: #b00; }
+  textarea { width: 100%; height: 160px; box-sizing: border-box; font-size: 16px; }
+  #help { font-size: 13px; padding: 6px; color: #aaa; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div id="status">Press 5 to talk</div>
+<textarea id="out" readonly placeholder="Your words show up here"></textarea>
+<div id="help">5 = talk / stop<br>1 = send as a text<br>0 = clear<br># = change API key<br>* = check saved key</div>
+
+<script>
+// Speech-to-text service (Groq's free tier runs OpenAI's Whisper model).
+const API_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+const MODEL = "whisper-large-v3-turbo";
+
+const statusEl = document.getElementById("status");
+const out = document.getElementById("out");
+let rec = null;      // the MediaRecorder while recording
+let busy = false;    // true while waiting on the AI
+let chunks = [];
+
+function say(text, recording) {
+  statusEl.textContent = text;
+  statusEl.className = recording ? "rec" : "";
+}
+
+// The key is saved only on this phone (localStorage).
+// Spaces and line breaks are removed, since one stray space makes Groq say "Invalid API Key".
+function cleanKey(k) { return (k || "").replace(/\s+/g, ""); }
+
+function saveKey(k) {
+  k = cleanKey(k);
+  if (!k) return null;
+  localStorage.setItem("sttKey", k);
+  say(keyCheck(k));
+  return k;
+}
+
+// Shows enough of the key to compare against Groq's page, without showing all of it.
+function keyCheck(k) {
+  const ok = k.startsWith("gsk_") && k.length === 56;
+  return (ok ? "Key saved: " : "Check key: ") + k.slice(0, 6) + "..." + k.slice(-4) + " (" + k.length + " chars)";
+}
+
+// Lets you skip typing: open this page as .../talktext/?k=YOURKEY once.
+(function keyFromLink() {
+  const m = location.search.match(/[?&]k=([^&]+)/);
+  if (m) {
+    saveKey(decodeURIComponent(m[1]));
+    history.replaceState(null, "", location.pathname);
+  }
+})();
+
+function getKey() {
+  let key = localStorage.getItem("sttKey");
+  if (!key) key = saveKey(prompt("Type your Groq API key (starts with gsk_)"));
+  return key;
+}
+
+async function startRecording() {
+  if (!getKey()) return say("Need an API key: press #");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    chunks = [];
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      transcribe();
+    };
+    rec.start();
+    say("Listening... press 5 to stop", true);
+  } catch (e) {
+    say("Mic blocked: " + e.name);
+  }
+}
+
+async function transcribe() {
+  busy = true;
+  say("Typing it out...");
+  const type = rec.mimeType || "audio/ogg";
+  const blob = new Blob(chunks, { type });
+  const ext = type.includes("webm") ? "webm" : "ogg";
+  rec = null;
+
+  const form = new FormData();
+  form.append("file", blob, "voice." + ext);
+  form.append("model", MODEL);
+
+  try {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + localStorage.getItem("sttKey") },
+      body: form
+    });
+    const data = await res.json();
+    if (res.status === 401) throw new Error("Groq rejected key. " + keyCheck(localStorage.getItem("sttKey")) + ". Press # to retype");
+    if (!res.ok) throw new Error(data.error ? data.error.message : res.status);
+    out.value = (out.value ? out.value + " " : "") + data.text.trim();
+    say("Done. 1 to send, 5 to add more");
+  } catch (e) {
+    say("Error: " + e.message);
+  }
+  busy = false;
+}
+
+// Opens Messages with the words already filled in.
+function sendAsText() {
+  if (!out.value) return say("Nothing to send yet");
+  window.location.href = "sms:?body=" + encodeURIComponent(out.value);
+}
+
+document.addEventListener("keydown", e => {
+  if (busy) return;
+  if (e.key === "5" || e.key === "Enter") {
+    e.preventDefault();
+    if (rec && rec.state === "recording") rec.stop();
+    else startRecording();
+  } else if (e.key === "1") {
+    sendAsText();
+  } else if (e.key === "0") {
+    out.value = "";
+    say("Cleared. Press 5 to talk");
+  } else if (e.key === "#") {
+    localStorage.removeItem("sttKey");
+    getKey();
+  } else if (e.key === "*") {
+    const k = localStorage.getItem("sttKey");
+    say(k ? keyCheck(k) : "No key saved: press #");
+  }
+});
+</script>
+</body>
+</html>
